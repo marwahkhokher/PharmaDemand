@@ -1,18 +1,5 @@
-# from fastapi import FastAPI
-# from fastapi import Response
-
-# app = FastAPI(title="ML Project API")
-
-# @app.get("/health")
-# def health():
-#     return {"status": "ok"}
-
-# @app.get("/favicon.ico")
-# def favicon():
-#     return Response(status_code=204)
-
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import io
 import json
@@ -21,14 +8,13 @@ import numpy as np
 import pandas as pd
 import joblib
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 
 # -------------------------------------------------
 # PATHS – aligned with your ML_Project layout
 # -------------------------------------------------
-
-# This file lives in: ML_Project/app/main.py
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
@@ -41,45 +27,45 @@ COOC_PATH = DATA_PROCESSED_DIR / "bundle_cooccurrence.csv"
 
 
 # -------------------------------------------------
-# LOAD MODEL + METADATA + BUNDLE TABLE AT STARTUP
-# (loaded once, reused for all requests)
+# SAFE STARTUP LOADS (CI-safe: never crash at import)
 # -------------------------------------------------
+MODEL = None
+METRICS: Dict[str, Any] = {}
+FEATURE_COLUMNS: List[str] = [
+    # fallback (must match compute_features_from_history keys)
+    "daily_sales",
+    "lag_1",
+    "lag_7",
+    "lag_14",
+    "roll_mean_7",
+    "roll_mean_14",
+    "day_of_week",
+    "is_weekend",
+    "month",
+]
+BEST_MODEL_NAME: str = "unknown"
 
-if not MODEL_PATH.exists():
-    raise RuntimeError(f"Model file not found at {MODEL_PATH}. Run ml/train.py first.")
+BUNDLE_DF: Optional[pd.DataFrame] = None
+RECOMMEND_INDEX: Dict[str, List[Dict[str, float]]] = {}
 
-if not METRICS_PATH.exists():
-    raise RuntimeError(f"Metrics file not found at {METRICS_PATH}. Run ml/train.py first.")
 
-if not COOC_PATH.exists():
-    raise RuntimeError(
-        f"Bundle co-occurrence file not found at {COOC_PATH}. "
-        "Run ml/ingest_kaggle_pharmacy.py first."
-    )
-
-# Load demand model
-MODEL = joblib.load(MODEL_PATH)
-
-# Load metrics + feature columns
-with open(METRICS_PATH, "r") as f:
-    METRICS = json.load(f)
-
-FEATURE_COLUMNS: List[str] = METRICS["feature_columns"]
-BEST_MODEL_NAME: str = METRICS["best_model"]
-
-# Load bundle co-occurrence table
-BUNDLE_DF = pd.read_csv(COOC_PATH, dtype={"item_a": str, "item_b": str})
-BUNDLE_DF["item_a"] = BUNDLE_DF["item_a"].astype(str).str.strip()
-BUNDLE_DF["item_b"] = BUNDLE_DF["item_b"].astype(str).str.strip()
-
-# Build recommendation index: product -> list[(other_product, score)]
-# We'll use confidence as the score.
 def build_recommend_index(df: pd.DataFrame) -> Dict[str, List[Dict[str, float]]]:
+    """
+    Builds: product -> list[{item, score}] using conf_a_to_b and conf_b_to_a.
+    Requires columns: item_a, item_b, conf_a_to_b, conf_b_to_a
+    """
     index: Dict[str, List[Dict[str, float]]] = {}
 
+    required_cols = {"item_a", "item_b", "conf_a_to_b", "conf_b_to_a"}
+    if not required_cols.issubset(set(df.columns)):
+        raise RuntimeError(
+            f"bundle_cooccurrence.csv missing required columns. "
+            f"Need {sorted(required_cols)}, found {list(df.columns)}"
+        )
+
     for _, row in df.iterrows():
-        a = str(row["item_a"])
-        b = str(row["item_b"])
+        a = str(row["item_a"]).strip()
+        b = str(row["item_b"]).strip()
         conf_a_to_b = float(row["conf_a_to_b"])
         conf_b_to_a = float(row["conf_b_to_a"])
 
@@ -88,30 +74,70 @@ def build_recommend_index(df: pd.DataFrame) -> Dict[str, List[Dict[str, float]]]
         if conf_b_to_a > 0:
             index.setdefault(b, []).append({"item": a, "score": conf_b_to_a})
 
-    # Sort each list by score descending
     for k in index:
         index[k].sort(key=lambda x: x["score"], reverse=True)
 
     return index
 
 
-RECOMMEND_INDEX = build_recommend_index(BUNDLE_DF)
+# Load model (safe)
+if MODEL_PATH.exists():
+    try:
+        MODEL = joblib.load(MODEL_PATH)
+    except Exception:
+        MODEL = None
+
+# Load metrics (safe)
+if METRICS_PATH.exists():
+    try:
+        with METRICS_PATH.open("r", encoding="utf-8") as f:
+            METRICS = json.load(f)
+
+        # Only override if present & correct types
+        if isinstance(METRICS.get("feature_columns"), list) and METRICS["feature_columns"]:
+            FEATURE_COLUMNS = [str(x) for x in METRICS["feature_columns"]]
+        if isinstance(METRICS.get("best_model"), str) and METRICS["best_model"]:
+            BEST_MODEL_NAME = METRICS["best_model"]
+
+    except Exception:
+        METRICS = {}
+        # keep fallback FEATURE_COLUMNS / BEST_MODEL_NAME
+
+# Load co-occurrence (safe)
+if COOC_PATH.exists():
+    try:
+        BUNDLE_DF = pd.read_csv(COOC_PATH, dtype={"item_a": str, "item_b": str})
+        BUNDLE_DF["item_a"] = BUNDLE_DF["item_a"].astype(str).str.strip()
+        BUNDLE_DF["item_b"] = BUNDLE_DF["item_b"].astype(str).str.strip()
+
+        RECOMMEND_INDEX = build_recommend_index(BUNDLE_DF)
+    except Exception:
+        BUNDLE_DF = None
+        RECOMMEND_INDEX = {}
 
 
 # -------------------------------------------------
-# Pydantic models for request/response schemas
+# GUARDS (only error when endpoint is called)
 # -------------------------------------------------
+def require_model():
+    if MODEL is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model not available at {MODEL_PATH}. Run ml/train.py to generate it (kept local, not in GitHub).",
+        )
 
+def require_cooc():
+    if not RECOMMEND_INDEX:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Bundle co-occurrence not available/loaded from {COOC_PATH}. Run ml/ingest_kaggle_pharmacy.py to generate it (or commit small artifact if required).",
+        )
+
+
+# -------------------------------------------------
+# Pydantic models
+# -------------------------------------------------
 class DemandRequest(BaseModel):
-    """
-    recent_daily_sales:
-        List of recent daily demand values for this product at this pharmacy.
-        Can be shorter than 14; we will left-pad with zeros.
-        The LAST value is today's demand, older ones come before it.
-
-    date:
-        Date for which we are making the prediction (e.g. "2024-12-31").
-    """
     pharmacy_id: str
     barcode: str
     date: str
@@ -140,24 +166,14 @@ class BundleResponse(BaseModel):
 # -------------------------------------------------
 # Helper functions
 # -------------------------------------------------
-
 def compute_features_from_history(req: DemandRequest) -> Dict[str, float]:
-    """
-    Turn recent_daily_sales + date into the exact feature set used in training.
-
-    We require at least 1 value in recent_daily_sales.
-    If fewer than 14 values, we pad with zeros at the front.
-    """
     history = list(req.recent_daily_sales)
     if len(history) == 0:
         raise HTTPException(status_code=400, detail="recent_daily_sales cannot be empty.")
 
-    # Ensure at least 14 days by left-padding with zeros
     if len(history) < 14:
-        padding = [0.0] * (14 - len(history))
-        history = padding + history
+        history = ([0.0] * (14 - len(history))) + history
 
-    # Use last X days for different lags/rolling stats
     daily_sales = float(history[-1])
     lag_1 = float(history[-2])
     lag_7 = float(history[-7])
@@ -166,13 +182,12 @@ def compute_features_from_history(req: DemandRequest) -> Dict[str, float]:
     roll_mean_7 = float(np.mean(history[-7:]))
     roll_mean_14 = float(np.mean(history[-14:]))
 
-    # Date-based features
     dt = pd.to_datetime(req.date)
-    day_of_week = int(dt.dayofweek)    # 0=Mon, 6=Sun
+    day_of_week = int(dt.dayofweek)
     is_weekend = int(day_of_week in (5, 6))
     month = int(dt.month)
 
-    features = {
+    return {
         "daily_sales": daily_sales,
         "lag_1": lag_1,
         "lag_7": lag_7,
@@ -183,64 +198,49 @@ def compute_features_from_history(req: DemandRequest) -> Dict[str, float]:
         "is_weekend": is_weekend,
         "month": month,
     }
-    return features
 
 
 def make_feature_vector(req: DemandRequest) -> np.ndarray:
-    """
-    Return a 2D numpy array [[...]] with columns exactly in FEATURE_COLUMNS order.
-    """
     feat_dict = compute_features_from_history(req)
 
     try:
         row = [feat_dict[col] for col in FEATURE_COLUMNS]
     except KeyError as e:
-        missing = str(e)
         raise HTTPException(
             status_code=500,
-            detail=f"Server is misconfigured: missing feature {missing} in compute_features_from_history.",
+            detail=f"Server misconfigured: missing feature in FEATURE_COLUMNS: {e}. "
+                   f"FEATURE_COLUMNS={FEATURE_COLUMNS}",
         )
 
     return np.array([row], dtype=float)
 
 
 def recommend_for_basket(basket: List[str], top_k: int = 5) -> List[Dict[str, Any]]:
-    """
-    Simple 'frequently bought together' recommendations using RECOMMEND_INDEX.
+    require_cooc()
 
-    Strategy:
-      - For each item in the basket, look up its recommended neighbors.
-      - Aggregate scores for each candidate item.
-      - Remove items already in the basket.
-      - Return top_k by total score.
-    """
-    if not basket:
+    basket_set = {str(b).strip() for b in basket if str(b).strip()}
+    if not basket_set:
         return []
-
-    basket_set = {str(b) for b in basket}
 
     scores: Dict[str, float] = {}
 
     for item in basket_set:
-        neighbors = RECOMMEND_INDEX.get(str(item), [])
-        for n in neighbors:
+        for n in RECOMMEND_INDEX.get(item, []):
             candidate = str(n["item"])
             score = float(n["score"])
             if candidate in basket_set:
                 continue
             scores[candidate] = scores.get(candidate, 0.0) + score
 
-    # Sort candidates by score descending
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    top = ranked[:max(top_k, 0)]
+    top = ranked[: max(int(top_k), 0)]
 
-    return [{"barcode": barcode, "score": score} for barcode, score in top]
+    return [{"barcode": barcode, "score": float(score)} for barcode, score in top]
 
 
 # -------------------------------------------------
 # FastAPI app
 # -------------------------------------------------
-
 app = FastAPI(
     title="PharmaDemandOps API",
     description="Demand forecasting + bundle recommendation for pharmacy transactions.",
@@ -250,34 +250,29 @@ app = FastAPI(
 
 @app.get("/health")
 def health():
-    """
-    Simple health check endpoint.
-    """
     return {
         "status": "ok",
-        "model_loaded": True,
+        "model_loaded": MODEL is not None,
+        "cooc_loaded": bool(RECOMMEND_INDEX),
         "model_name": BEST_MODEL_NAME,
         "feature_columns": FEATURE_COLUMNS,
+        "metrics_file_present": METRICS_PATH.exists(),
+        "cooc_file_present": COOC_PATH.exists(),
     }
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)
 
 
 @app.post("/predict/demand-next7", response_model=DemandResponse)
 def predict_demand_next7(payload: DemandRequest):
-    """
-    Predict next-day and approximate next-7-day demand for a product.
+    require_model()
 
-    NOTE:
-      - Model was trained to predict *next-day* demand.
-      - We approximate 7-day demand as 7 * next-day prediction
-        (this is clearly documented for your report).
-    """
-    # Build feature vector in the correct order
     X = make_feature_vector(payload)
 
-    # Predict next-day demand
-    next_day_pred = float(MODEL.predict(X)[0])
-
-    # Simple approximation for next 7 days
+    next_day_pred = float(MODEL.predict(X)[0])  # type: ignore[union-attr]
     next_7day_pred = float(next_day_pred * 7.0)
 
     return DemandResponse(
@@ -292,9 +287,6 @@ def predict_demand_next7(payload: DemandRequest):
 
 @app.post("/recommend/bundles", response_model=BundleResponse)
 def recommend_bundles(req: BundleRequest):
-    """
-    Given a list of barcodes in the current basket, return bundle recommendations.
-    """
     if not req.basket:
         raise HTTPException(status_code=400, detail="Basket cannot be empty.")
 
@@ -308,23 +300,16 @@ def recommend_bundles(req: BundleRequest):
 
 @app.post("/recommend/from-file")
 async def recommend_from_file(file: UploadFile = File(...), top_k: int = 5):
-    """
-    Upload a CSV with at least two columns:
-      - Invoice
-      - barcode
+    require_cooc()
 
-    For each invoice, we compute recommended additional items.
-    Returns JSON: { invoice_id: [ {barcode, score}, ... ], ... }
-    """
     try:
         contents = await file.read()
         df = pd.read_csv(
             io.StringIO(contents.decode("utf-8")),
-            dtype={"Invoice": str, "barcode": str}
+            dtype={"Invoice": str, "barcode": str},
         )
         df["Invoice"] = df["Invoice"].astype(str).str.strip()
         df["barcode"] = df["barcode"].astype(str).str.strip()
-
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read CSV file: {e}")
 
@@ -332,17 +317,12 @@ async def recommend_from_file(file: UploadFile = File(...), top_k: int = 5):
     if not required_cols.issubset(df.columns):
         raise HTTPException(
             status_code=400,
-            detail=f"CSV must contain columns: {', '.join(required_cols)}",
+            detail=f"CSV must contain columns: {', '.join(sorted(required_cols))}. Found: {list(df.columns)}",
         )
 
     results: Dict[str, List[Dict[str, Any]]] = {}
-
     for invoice_id, group in df.groupby("Invoice"):
         basket = [str(b) for b in group["barcode"].dropna().unique().tolist()]
-        recs = recommend_for_basket(basket, top_k=top_k)
-        results[str(invoice_id)] = recs
+        results[str(invoice_id)] = recommend_for_basket(basket, top_k=top_k)
 
-    return {
-        "top_k": top_k,
-        "results": results,
-    }
+    return {"top_k": int(top_k), "results": results}
