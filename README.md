@@ -1,53 +1,35 @@
-PharmaDemand 💊📈
+# PharmaDemandOps 💊📈
 
-End-to-end ML Engineering & MLOps project for pharmacy demand forecasting and product bundle recommendation.
+End-to-end ML Engineering & MLOps project for pharmacy demand forecasting and bundle recommendation.
 
-Features
+## Features
+- 📦 7-day demand forecasting
+- 🛒 Product bundle recommendation (frequently bought together)
+- 🚀 FastAPI-based inference service
+- 🧪 Automated unit & API tests
+- 🐳 Dockerized application
+- 🔁 GitHub Actions CI (stable)
 
-📦 7-day demand forecasting
+## Tech Stack
+- Python, Pandas, NumPy, Scikit-learn
+- FastAPI
+- Docker
+- GitHub Actions
 
-🛒 Product bundle recommendations
+## API Endpoints
+- `GET /health`
+- `POST /predict/demand-next7`
+- `POST /recommend/bundles`
+- `POST /recommend/from-file`
 
-🚀 FastAPI inference service
-
-🧪 Automated tests (pytest)
-
-🐳 Dockerized application
-
-🔁 GitHub Actions CI (stable)
-
-Tech Stack
-
-Python, Pandas, NumPy, Scikit-learn
-
-FastAPI
-
-Docker
-
-GitHub Actions
-
-API Endpoints
-
-GET /health
-
-POST /predict/demand-next7
-
-POST /recommend/bundles
-
-POST /recommend/from-file
-
-Run Locally
+## Run Locally
+```bash
 pip install -r requirements.txt
 uvicorn app.main:app --reload
-
-
-Open API docs at:
-👉 http://127.0.0.1:8000/docs
-
 
 Run Tests
 pytest -q
 
-Docker
-docker build -t pharmademand .
-docker run -p 8000:8000 pharmademand
+Run with Docker
+docker build -t pharmademandops .
+docker run -p 8000:8000 pharmademandops
