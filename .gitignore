@@ -29,8 +29,28 @@ Thumbs.db
 # =========================
 # DATA (never commit large datasets)
 # =========================
+# Raw dataset (too big for GitHub)
 data/raw/
-data/processed/
+
+# Ignore processed by default...
+data/processed/**
+
+# ...but allow the few small runtime artifacts needed by API/CI
+!data/processed/
+!data/processed/bundle_cooccurrence.csv
+!data/processed/forecast_daily_panel.csv
+!data/processed/forecast_train.csv
+!data/processed/forecast_val.csv
+!data/processed/forecast_test.csv
+
+# Still ignore big/extra processed files
+data/processed/master_transactions_cleaned.csv
+data/processed/transactions_master*.csv
+data/processed/transactions_master_clean.csv
+data/processed/features.csv
+data/processed/catalog.csv
+data/processed/global_test_set.csv
+
 
 # =========================
 # REPORTS (generated artifacts)
