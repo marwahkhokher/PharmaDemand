@@ -58,3 +58,4 @@ models/latest/*.pkl
 !models/latest/feature_columns.json
 !models/latest/*.json
 
+test_invoices.csv
