@@ -1,4 +1,6 @@
+# =========================
 # Python
+# =========================
 __pycache__/
 *.pyc
 *.pyo
@@ -6,33 +8,53 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.env.*
 
-# OS
+# =========================
+# OS files
+# =========================
 .DS_Store
 Thumbs.db
 
+# =========================
 # Logs
+# =========================
 *.log
 
+# =========================
 # Jupyter
+# =========================
 .ipynb_checkpoints/
 
-# Raw dataset (too big for GitHub)
+# =========================
+# DATA (never commit large datasets)
+# =========================
 data/raw/
+data/processed/
 
-# Optional: keep processed files out EXCEPT the few we need for CI
-# (we will whitelist below if needed)
+# =========================
+# REPORTS (generated artifacts)
+# =========================
+reports/*.json
 
+# =========================
+# MODELS
+# =========================
 
-# Old/extra artifacts (keep repo clean)
-data/processed/transactions_master*.csv
-data/processed/features.csv
-data/processed/catalog.csv
-data/processed/global_test_set.csv
-models/20*/
-models/latest/
-reports/metrics.json
-test_invoices.csv
+# Ignore all dated / experiment model folders
+models/2025-*/
+models/*.joblib
+models/*.pkl
 
+# KEEP ONLY the production model
+!models/latest/
+!models/latest/**
 
-data/processed/master_transactions_cleaned.csv
+# Don't commit huge model binaries
+models/latest/*.joblib
+models/latest/*.pkl
+
+# Keep metadata files in latest
+!models/latest/feature_columns.json
+!models/latest/*.json
+
