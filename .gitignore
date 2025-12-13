@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Raw dataset (too big for GitHub)
+data/raw/
+
+# Optional: keep processed files out EXCEPT the few we need for CI
+# (we will whitelist below if needed)
+
+
+# Old/extra artifacts (keep repo clean)
+data/processed/transactions_master*.csv
+data/processed/features.csv
+data/processed/catalog.csv
+data/processed/global_test_set.csv
+models/20*/
+models/latest/
+reports/metrics.json
+test_invoices.csv
+
+
+data/processed/master_transactions_cleaned.csv
