@@ -260,9 +260,21 @@ def build_forecasting_dataset(df_all: pd.DataFrame):
     print("Val shape:", val_df.shape)
     print("Test shape:", test_df.shape)
 
-    train_df.to_csv(OUTPUT_DIR / "forecast_train.csv", index=False)
-    val_df.to_csv(OUTPUT_DIR / "forecast_val.csv", index=False)
-    test_df.to_csv(OUTPUT_DIR / "forecast_test.csv", index=False)
+    # Train
+    tmp = OUTPUT_DIR / "forecast_train.tmp.csv"
+    train_df.to_csv(tmp, index=False)
+    tmp.replace(OUTPUT_DIR / "forecast_train.csv")
+
+    # Val
+    tmp = OUTPUT_DIR / "forecast_val.tmp.csv"
+    val_df.to_csv(tmp, index=False)
+    tmp.replace(OUTPUT_DIR / "forecast_val.csv")
+
+    # Test
+    tmp = OUTPUT_DIR / "forecast_test.tmp.csv"
+    test_df.to_csv(tmp, index=False)
+    tmp.replace(OUTPUT_DIR / "forecast_test.csv")
+
 
     print("Saved train/val/test splits for forecasting.")
 

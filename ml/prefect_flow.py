@@ -9,7 +9,14 @@ from typing import Optional
 import sys
 
 
+
 from prefect import flow, task, get_run_logger
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ML_DIR = PROJECT_ROOT / "ml"
+DEEPCHECKS_SCRIPT = ML_DIR / "deepchecks_gate.py"
+
 
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +74,11 @@ def ml_quality_gate() -> None:
         raise FileNotFoundError(f"Missing: {QA_SCRIPT}")
     _run([sys.executable, str(QA_SCRIPT)])
     logger.info("Quality gate passed.")
+
+    if not DEEPCHECKS_SCRIPT.exists():
+        raise FileNotFoundError(f"Missing: {DEEPCHECKS_SCRIPT}")
+    _run([sys.executable, str(DEEPCHECKS_SCRIPT)])
+
 
 
 @task

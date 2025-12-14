@@ -79,3 +79,9 @@ models/latest/*.pkl
 !models/latest/*.json
 
 test_invoices.csv
+
+# Ignore generated run artifacts completely
+reports/
+models/versions/
+models/latest/
+
