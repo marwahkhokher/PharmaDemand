@@ -25,6 +25,51 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
+      # ✅ ADD THIS STEP
+      - name: Create minimal model + metrics for CI
+        run: |
+          python - <<'PY'
+          import json
+          import numpy as np
+          from pathlib import Path
+          import joblib
+          from sklearn.linear_model import LinearRegression
+
+          root = Path.cwd()
+
+          feature_cols = [
+            "daily_sales", "lag_1", "lag_7", "lag_14",
+            "roll_mean_7", "roll_mean_14",
+            "day_of_week", "is_weekend", "month"
+          ]
+
+          models_dir = root / "models"
+          reports_dir = root / "reports"
+          latest_dir = models_dir / "latest"
+
+          models_dir.mkdir(parents=True, exist_ok=True)
+          reports_dir.mkdir(parents=True, exist_ok=True)
+          latest_dir.mkdir(parents=True, exist_ok=True)
+
+          # tiny dummy model
+          X = np.random.randn(200, len(feature_cols))
+          y = np.random.randn(200)
+          model = LinearRegression().fit(X, y)
+
+          # write to common paths
+          joblib.dump(model, models_dir / "demand_regressor.pkl")
+          (reports_dir / "demand_model_metrics.json").write_text(
+              json.dumps({"feature_columns": feature_cols}, indent=2),
+              encoding="utf-8"
+          )
+          (latest_dir / "feature_columns.json").write_text(
+              json.dumps(feature_cols, indent=2),
+              encoding="utf-8"
+          )
+
+          print("✅ CI artifacts created")
+          PY
+
       - name: Run tests
         run: |
           pytest -q
