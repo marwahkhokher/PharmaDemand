@@ -246,6 +246,17 @@ app = FastAPI(
     description="Demand forecasting + bundle recommendation for pharmacy transactions.",
     version="1.0.0",
 )
+from app.routes_metrics import router as metrics_router
+app.include_router(metrics_router)
+
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPORTS_DIR = PROJECT_ROOT / "reports"
+
+if REPORTS_DIR.exists():
+    app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
 
 
 @app.get("/health")

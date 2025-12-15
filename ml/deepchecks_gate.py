@@ -121,7 +121,7 @@ def main():
     out_dir = REPORTS / "deepchecks"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / "deepchecks_report.html"
-    result.save_as_html(str(html_path))
+    result.save_as_html(str(html_path), as_widget=False, requirejs=False)
     print(f"✅ DeepChecks HTML report saved: {html_path}")
 
     # -------- Gates --------
