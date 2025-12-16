@@ -1,504 +1,960 @@
+from __future__ import annotations
+
 import os
-import time
 import json
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
-from datetime import date
+from typing import Any, Dict, Optional, Tuple, List
 
 import pandas as pd
+import numpy as np
 import requests
 import streamlit as st
+import plotly.graph_objects as go
+import plotly.express as px
 
+# =========================
+# App Config
+# =========================
+st.set_page_config(
+    page_title="PharmaDemand",
+    page_icon="💊",
+    layout="wide",  # Centered for better width control
+    initial_sidebar_state="expanded",
+)
 
-# -----------------------------
-# Config
-# -----------------------------
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000").rstrip("/")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+COOC_PATH = PROJECT_ROOT / "data" / "processed" / "bundle_cooccurrence.csv"
+TRAIN_PATH = PROJECT_ROOT / "data" / "processed" / "forecast_train.csv"
+TEST_PATH = PROJECT_ROOT / "data" / "processed" / "forecast_test.csv"
 
+DEFAULT_API_URL = os.getenv("API_URL", "http://127.0.0.1:8000").rstrip("/")
+DEEPCHECKS_URL = f"{DEFAULT_API_URL}/reports/deepchecks/deepchecks_report.html?v=latest"
 
-# -----------------------------
-# Helpers (API)
-# -----------------------------
-def api_get_json(path: str, timeout: int = 10):
-    r = requests.get(f"{API_URL}{path}", timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+# =========================
+# FINAL FIX: Perfect balance of gap and width
+# =========================
+st.markdown("""
+<style>
+/* Import fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-def api_post_json(path: str, payload: dict, timeout: int = 20):
-    r = requests.post(f"{API_URL}{path}", json=payload, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+/* CSS Variables */
+:root {
+  --bg-main: #F5F7FA;
+  --bg-card: #FFFFFF;
+  --bg-sidebar: #FAFAFA;
+  --text-primary: #1F2937;
+  --text-secondary: #6B7280;
+  --text-muted: #9CA3AF;
+  --border: #E5E7EB;
+  --primary: #0F766E;
+  --success: #10B981;
+  --shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
 
-def safe_try(fn, default=None):
+/* Base settings */
+html, body, [class*="css"] {
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-x: hidden !important;
+}
+
+/* SIDEBAR - Fixed width, always visible */
+[data-testid="stSidebar"] {
+  width: 280px !important;
+  min-width: 280px !important;
+  max-width: 280px !important;
+}
+
+[data-testid="stSidebar"] > div {
+  width: 280px !important;
+  padding: 1rem !important;
+  background: var(--bg-sidebar) !important;
+}
+
+[data-testid="collapsedControl"] {
+  display: none !important;
+}
+
+/* MAIN CONTENT - Perfect spacing */
+.main {
+  background: var(--bg-main);
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+/* Page Headers */
+.page-header {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.page-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 0.25rem 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.page-subtitle {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* KPI Cards */
+.kpi-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  box-shadow: var(--shadow);
+  height: 110px;
+}
+
+.kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 0.5rem;
+}
+
+.kpi-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+  line-height: 1.1;
+}
+
+.kpi-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+/* Chart Container */
+.chart-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  box-shadow: var(--shadow);
+  margin-top: 1.5rem;
+}
+
+.chart-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Buttons - Beautiful styling */
+.stButton > button {
+  font-size: 15px !important;
+  padding: 0.75rem 1.25rem !important;
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  transition: all 0.2s ease !important;
+  border: 1px solid var(--border) !important;
+  width: 100% !important;
+  text-align: left !important;
+}
+
+.stButton > button:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+}
+
+.stButton > button[kind="primary"] {
+  background: linear-gradient(135deg, #0F766E, #14B8A6) !important;
+  color: white !important;
+  border: none !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 6px rgba(15, 118, 110, 0.3) !important;
+}
+
+.stButton > button[kind="secondary"] {
+  background: white !important;
+  color: var(--text-secondary) !important;
+}
+
+/* Remove branding */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 0.5rem;
+}
+
+.stTabs [data-baseweb="tab"] {
+  font-size: 14px;
+  padding: 0.75rem 1.5rem;
+}
+
+/* ===== FORCE MAIN CONTENT WIDTH (works across Streamlit versions) ===== */
+div[data-testid="stMainBlockContainer"],
+section.main > div.block-container,
+div.block-container {
+  max-width: 1500px !important;
+  width: 1500px !important;
+  margin-left: 0 !important;   /* no centering */
+  margin-right: auto !important;
+  padding-left: 1.5rem !important;
+  padding-right: 1.5rem !important;
+  box-sizing: border-box !important;
+}
+
+/* Responsive: don’t overflow on small screens */
+@media (max-width: 920px) {
+  div[data-testid="stMainBlockContainer"],
+  section.main > div.block-container,
+  div.block-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+  }
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+# =========================
+# Helper Functions
+# =========================
+
+@dataclass
+class SystemHealth:
+    api_online: bool
+    model_ready: bool
+    metrics_available: bool
+    data_available: bool
+
+def _safe_get(d: Dict[str, Any], path: str, default=None):
+    """Safely navigate nested dictionary."""
+    cur = d
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+@st.cache_data(show_spinner=False, ttl=10)
+def fetch_json(url: str) -> Tuple[Optional[dict], Optional[str]]:
+    """Fetch JSON from URL."""
     try:
-        return fn()
+        r = requests.get(url, timeout=5)
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code}"
+        return r.json(), None
+    except Exception as e:
+        return None, str(e)
+
+@st.cache_data(show_spinner=False, ttl=60)
+def load_csv(path: Path) -> Optional[pd.DataFrame]:
+    """Load CSV with caching."""
+    if not path.exists():
+        return None
+    try:
+        return pd.read_csv(path)
     except Exception:
-        return default
+        return None
 
-
-# -----------------------------
-# Helpers (Artifacts)
-# -----------------------------
-def file_status(path: Path):
-    return {
-        "exists": path.exists(),
-        "path": str(path),
-        "last_modified": (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime)) if path.exists() else None),
-        "size_mb": (round(path.stat().st_size / (1024 * 1024), 2) if path.exists() else None),
-    }
-
-def human_badge(ok: bool, label: str):
-    return f"{'✅' if ok else '❌'} {label}"
-
-def pick_first_existing(paths: list[Path]) -> Path | None:
-    for p in paths:
-        if p.exists():
-            return p
-    return None
-
-
-# -----------------------------
-# Bundle Co-occurrence Loader (Flexible)
-# -----------------------------
-@st.cache_data(show_spinner=False)
-def load_cooc_csv():
-    """
-    Tries to find a co-occurrence / bundle CSV in common locations.
-    Returns (df, chosen_path) or (None, None) if not found.
-
-    IMPORTANT:
-    - This function is designed to be flexible with different column names.
-    - If your CSV uses different column names, adjust infer logic below.
-    """
-    candidates = [
-        PROJECT_ROOT / "data" / "processed" / "bundle_cooccurrence.csv",
-        PROJECT_ROOT / "data" / "processed" / "cooccurrence.csv",
-        PROJECT_ROOT / "data" / "processed" / "cooc.csv",
-        PROJECT_ROOT / "reports" / "bundle_cooccurrence.csv",
-        PROJECT_ROOT / "reports" / "cooccurrence.csv",
-        PROJECT_ROOT / "bundle_cooccurrence.csv",
-        PROJECT_ROOT / "cooccurrence.csv",
-    ]
-    chosen = pick_first_existing(candidates)
-    if not chosen:
-        return None, None
-
-    df = pd.read_csv(chosen)
-
-    # Clean obvious whitespace
-    df.columns = [c.strip() for c in df.columns]
-    for c in df.select_dtypes(include="object").columns:
-        df[c] = df[c].astype(str).str.strip()
-
-    return df, chosen
-
-
-def infer_item_columns(df: pd.DataFrame):
-    """
-    Try to infer "item A" and "item B" columns.
-    Common patterns:
-      - antecedent / consequent
-      - item_a / item_b
-      - product_a / product_b
-      - barcode_a / barcode_b
-      - source / target
-    """
-    cols = set(df.columns)
-
-    pairs = [
-        ("antecedent", "consequent"),
-        ("item_a", "item_b"),
-        ("product_a", "product_b"),
-        ("barcode_a", "barcode_b"),
-        ("source", "target"),
-        ("from", "to"),
-        ("lhs", "rhs"),
-    ]
-    for a, b in pairs:
-        if a in cols and b in cols:
-            return a, b
-
-    # fallback heuristic: pick first two object columns
-    obj_cols = list(df.select_dtypes(include="object").columns)
-    if len(obj_cols) >= 2:
-        return obj_cols[0], obj_cols[1]
-
-    return None, None
-
-
-def infer_score_column(df: pd.DataFrame):
-    # Prefer confidence columns first, then support/count
-    preferred = ["conf_a_to_b", "conf_b_to_a", "support", "cooc_count"]
-    cols = {c.lower(): c for c in df.columns}
-    for p in preferred:
-        if p.lower() in cols:
-            return cols[p.lower()]
-    return None
-
-
-
-def recommend_bundles_from_df(df: pd.DataFrame, query_item: str, top_n: int = 5):
-    """
-    Returns a dataframe of recommendations: recommended_item + strength
-    Works whether query_item appears in colA or colB.
-    """
-    colA, colB = infer_item_columns(df)
-    if not colA or not colB:
-        return None, "Could not infer item columns from co-occurrence CSV."
-
-    score_col = infer_score_column(df)
-
-    q = str(query_item).strip()
-
-    # match either side
-    mask = (df[colA].astype(str) == q) | (df[colB].astype(str) == q)
-    sub = df.loc[mask].copy()
-    if sub.empty:
-        return pd.DataFrame(columns=["recommended_item", "strength"]), None
-
-    # Determine "other" item
-    sub["recommended_item"] = sub.apply(lambda r: r[colB] if str(r[colA]) == q else r[colA], axis=1)
-
-    # Direction-aware scoring:
-    # If query matches item_a -> use conf_a_to_b
-    # If query matches item_b -> use conf_b_to_a
-    if "conf_a_to_b" in df.columns and "conf_b_to_a" in df.columns:
-        def _score_row(r):
-            if str(r[colA]) == q:
-                return r["conf_a_to_b"]
-            else:
-                return r["conf_b_to_a"]
-        sub["strength"] = pd.to_numeric(sub.apply(_score_row, axis=1), errors="coerce")
-    elif score_col:
-        sub["strength"] = pd.to_numeric(sub[score_col], errors="coerce")
-    else:
-        sub["strength"] = 1.0
-
-
-    # Aggregate duplicates
-    out = (
-        sub.groupby("recommended_item", as_index=False)["strength"]
-        .sum()
-        .sort_values("strength", ascending=False)
-        .head(top_n)
+def get_system_health(health: Optional[dict], metrics: Optional[dict], cooc_df: Optional[pd.DataFrame]) -> SystemHealth:
+    """Determine system health."""
+    return SystemHealth(
+        api_online=health is not None,
+        model_ready=bool(_safe_get(health or {}, "model_loaded", False)),
+        metrics_available=metrics is not None,
+        data_available=cooc_df is not None and len(cooc_df) > 0,
     )
 
-    return out, None
+def infer_item_columns(df: pd.DataFrame) -> Tuple[str, str]:
+    """Infer item column names."""
+    if "item_a" in df.columns and "item_b" in df.columns:
+        return "item_a", "item_b"
+    candidates = [c for c in df.columns if "item" in c.lower()]
+    if len(candidates) >= 2:
+        return candidates[0], candidates[1]
+    return "", ""
 
+def recommend_bundles(df: pd.DataFrame, query_item: str, top_n: int = 5) -> pd.DataFrame:
+    """Generate bundle recommendations."""
+    colA, colB = infer_item_columns(df)
+    if not colA or not colB:
+        return pd.DataFrame()
 
-# -----------------------------
-# Page setup
-# -----------------------------
-st.set_page_config(page_title="PharmaDemandOps", layout="wide")
+    q = str(query_item).strip()
+    mask = (df[colA].astype(str) == q) | (df[colB].astype(str) == q)
+    sub = df.loc[mask].copy()
+    
+    if sub.empty:
+        return pd.DataFrame()
 
-st.title("PharmaDemandOps")
-st.caption("Forecast demand for the next 7 days and recommend frequently bought-together bundles.")
+    sub["recommended_item"] = sub.apply(
+        lambda r: r[colB] if str(r[colA]) == q else r[colA], 
+        axis=1
+    )
 
-# -----------------------------
-# Fetch system info
-# -----------------------------
-health = safe_try(lambda: api_get_json("/health"), default=None)
-metrics = safe_try(lambda: api_get_json("/metrics/latest"), default=None)
-
-# Report URL (cache-busted)
-deepchecks_url = f"{API_URL}/reports/deepchecks/deepchecks_report.html?v={int(time.time())}"
-
-# Artifact paths (local)
-model_path = PROJECT_ROOT / "models" / "demand_regressor.pkl"
-metrics_path = PROJECT_ROOT / "reports" / "demand_model_metrics.json"
-report_path = PROJECT_ROOT / "reports" / "deepchecks" / "deepchecks_report.html"
-
-# Load cooc file (local)
-cooc_df, cooc_path = load_cooc_csv()
-
-
-# -----------------------------
-# Top status badges
-# -----------------------------
-api_online = health is not None
-model_ready = bool(health and health.get("model_loaded") is True)
-metrics_ready = bool(metrics is not None)
-deepchecks_ready = report_path.exists()
-bundles_ready = (cooc_df is not None)
-
-badge_cols = st.columns(5)
-badge_cols[0].markdown(human_badge(api_online, "API Online"))
-badge_cols[1].markdown(human_badge(model_ready, "Model Ready"))
-badge_cols[2].markdown(human_badge(metrics_ready, "Metrics Available"))
-badge_cols[3].markdown(human_badge(deepchecks_ready, "DeepChecks Report"))
-badge_cols[4].markdown(human_badge(bundles_ready, "Bundles Data"))
-
-
-st.divider()
-
-# -----------------------------
-# Tabs
-# -----------------------------
-tab_forecast, tab_bundles, tab_system = st.tabs(["📈 Forecast Demand", "🧺 Bundle Recommendations", "🧪 System & Validation"])
-
-
-# ============================================================
-# TAB 1: Forecast Demand
-# ============================================================
-with tab_forecast:
-    st.subheader("Predict demand for the next 7 days")
-    st.write("Enter the last 14 days sales for an item and get an estimated total demand for the next week.")
-
-    left, right = st.columns([1.1, 1.0])
-
-    with left:
-        pharmacy_id = st.text_input("Pharmacy Branch ID", value="Ph01_Z01_C01")
-        barcode = st.text_input("Product Barcode", value="6251070000000")
-        d = st.date_input("Start Date", value=date(2024, 12, 31))
-
-        recent = st.text_area(
-            "Last 14 Days Sales (comma-separated)",
-            value="0,1,0,2,1,0,3,2,1,0,1,2,0,1",
-            help="Example: 14 numbers separated by commas."
+    if "conf_a_to_b" in df.columns and "conf_b_to_a" in df.columns:
+        sub["confidence"] = sub.apply(
+            lambda r: r["conf_a_to_b"] if str(r[colA]) == q else r["conf_b_to_a"],
+            axis=1
         )
+    else:
+        sub["confidence"] = 1.0
 
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Use sample data"):
-                st.session_state["recent_sales"] = "0,1,0,2,1,0,3,2,1,0,1,2,0,1"
+    table = (
+        sub.groupby("recommended_item", as_index=False)
+        .agg(
+            confidence=("confidence", "max"),
+            support=("support", "max") if "support" in sub.columns else ("recommended_item", "count"),
+            cooc_count=("cooc_count", "max") if "cooc_count" in sub.columns else ("recommended_item", "count"),
+        )
+        .sort_values("confidence", ascending=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+
+    for col in ["confidence", "support"]:
+        if col in table.columns:
+            table[col] = pd.to_numeric(table[col], errors="coerce").round(4)
+    
+    if "cooc_count" in table.columns:
+        table["cooc_count"] = pd.to_numeric(table["cooc_count"], errors="coerce").astype(int)
+
+    return table
+
+# =========================
+# Sidebar
+# =========================
+
+def render_sidebar(api_url: str, system_health: SystemHealth):
+    """Render sidebar."""
+    with st.sidebar:
+        # Logo and Title
+        st.markdown("""
+        <div style="text-align: center; margin-bottom: 2rem; padding-top: 0.5rem;">
+            <div style="font-size: 52px; margin-bottom: 0.75rem;">💊</div>
+            <div style="font-size: 20px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.5px;">PharmaDemand</div>
+            <div style="font-size: 13px; color: var(--text-muted); margin-top: 0.5rem;">MLOps Dashboard</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Navigation
+        st.markdown('<div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 1rem; text-transform: uppercase; letter-spacing: 0.5px;">Navigation</div>', unsafe_allow_html=True)
+        
+        pages = [
+            ("🏠", "Dashboard"),
+            ("📈", "Forecasting"),
+            ("🧺", "Bundles"),
+            ("📊", "Analytics"),
+            ("🔍", "Monitoring"),
+            ("📚", "System"),
+        ]
+        
+        if "page" not in st.session_state:
+            st.session_state.page = "Dashboard"
+        
+        for icon, name in pages:
+            is_active = st.session_state.page == name
+            
+            if st.button(
+                f"{icon}  {name}",
+                use_container_width=True,
+                key=f"nav_{name}",
+                type="primary" if is_active else "secondary"
+            ):
+                st.session_state.page = name
                 st.rerun()
-        with c2:
-            st.write("")
+            
+            st.markdown('<div style="height: 6px;"></div>', unsafe_allow_html=True)
 
-        if "recent_sales" in st.session_state:
-            recent = st.session_state["recent_sales"]
+# =========================
+# Main App
+# =========================
 
-        predict_clicked = st.button("Predict next 7 days ✅", type="primary")
+def main():
+    if "api_url" not in st.session_state:
+        st.session_state.api_url = DEFAULT_API_URL
+    
+    api_url = st.session_state.api_url
+    
+    # Fetch data
+    health, _ = fetch_json(f"{api_url}/health")
+    metrics, _ = fetch_json(f"{api_url}/metrics/latest")
+    cooc_df = load_csv(COOC_PATH)
+    train_df = load_csv(TRAIN_PATH)
+    test_df = load_csv(TEST_PATH)
+    
+    system_health = get_system_health(health, metrics, cooc_df)
+    
+    # Render sidebar
+    render_sidebar(api_url, system_health)
+    
+    # Route pages
+    page = st.session_state.page
+    
+    if page == "Dashboard":
+        render_dashboard(system_health, health, metrics, cooc_df, train_df)
+    elif page == "Forecasting":
+        render_forecasting(api_url, system_health)
+    elif page == "Bundles":
+        render_bundles(cooc_df, system_health)
+    elif page == "Analytics":
+        render_analytics(train_df, test_df, cooc_df)
+    elif page == "Monitoring":
+        render_monitoring(metrics, health, api_url)
+    elif page == "System":
+        render_system(train_df, test_df, cooc_df, metrics)
 
-    with right:
-        st.subheader("Result")
+# =========================
+# Page: Dashboard
+# =========================
 
-        if predict_clicked:
+def render_dashboard(system_health: SystemHealth, health: Optional[dict], metrics: Optional[dict], cooc_df: Optional[pd.DataFrame], train_df: Optional[pd.DataFrame]):
+    """Dashboard."""
+    
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">🏠 Dashboard</div>
+        <div class="page-subtitle">System overview and key performance indicators</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # KPI Row
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        model_name = _safe_get(health or {}, "model_name", "Unknown")
+        if len(model_name) > 20:
+            model_name = model_name[:17] + "..."
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">ACTIVE MODEL</div>
+            <div class="kpi-value" style="font-size: 18px;">{model_name}</div>
+            <div class="kpi-subtitle">Production model</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        rmse_test = _safe_get(metrics or {}, "metrics.test.rmse")
+        rmse_display = f"{float(rmse_test):.3f}" if rmse_test is not None else "—"
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">TEST RMSE</div>
+            <div class="kpi-value">{rmse_display}</div>
+            <div class="kpi-subtitle">Model accuracy</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        n_products = "—"
+        if cooc_df is not None:
+            colA, colB = infer_item_columns(cooc_df)
+            if colA and colB:
+                unique_items = pd.concat([cooc_df[colA], cooc_df[colB]]).nunique()
+                n_products = f"{unique_items}"
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">PRODUCTS</div>
+            <div class="kpi-value">{n_products}</div>
+            <div class="kpi-subtitle">In catalog</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Chart Section
+    st.markdown("""
+    <div class="chart-card">
+        <div class="chart-title">📊 Recent Sales Trend</div>
+    """, unsafe_allow_html=True)
+    
+    if train_df is not None and "daily_sales" in train_df.columns:
+        recent_sales = train_df["daily_sales"].tail(60)
+        dates = pd.date_range(end=datetime.now(), periods=len(recent_sales), freq='D')
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dates,
+            y=recent_sales,
+            mode='lines',
+            name='Units Sold',
+            line=dict(color='#0F766E', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(15, 118, 110, 0.1)'
+        ))
+        
+        fig.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Units Sold",
+            template="plotly_white",
+            height=280,
+            margin=dict(l=40, r=20, t=10, b=40),
+            hovermode='x unified',
+            showlegend=False,
+        )
+        
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    else:
+        st.info("Sales data not available")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================
+# Page: Forecasting
+# =========================
+
+def render_forecasting(api_url: str, system_health: SystemHealth):
+    """Forecasting page."""
+    
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">📈 Forecasting</div>
+        <div class="page-subtitle">Predict demand for pharmacy items</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if not system_health.model_ready:
+        st.error("⚠️ Model not ready")
+        return
+    
+    # Explanation section
+    with st.expander("ℹ️ How Forecasting Works", expanded=False):
+        st.markdown("""
+        ### 📊 What the Forecasts Mean
+        
+        **Next Day Demand:**
+        - Predicted number of units that will be sold **tomorrow**
+        - Based on recent 14-day sales pattern, seasonality (day of week), and historical trends
+        - Helps with: Daily inventory planning, staff scheduling
+        
+        **Next 7-Day Demand:**
+        - **Total units** predicted to be sold over the **next 7 days** (cumulative)
+        - Accounts for weekly patterns, seasonal variations, and demand trends
+        - Helps with: Weekly ordering, stock replenishment planning
+        
+        ### 🤖 Model Input Features
+        - **Recent Sales History:** Last 14 days of daily sales (lag features)
+        - **Rolling Averages:** 7-day and 14-day moving averages
+        - **Seasonality:** Day of week (weekday vs weekend), month
+        - **Product ID & Pharmacy:** Specific demand patterns per item and location
+        
+        ### 📈 How It's Calculated
+        1. Model analyzes your recent 14-day sales pattern
+        2. Identifies trends (increasing/decreasing demand)
+        3. Applies seasonality adjustments (e.g., weekends may have different patterns)
+        4. Generates prediction using trained regression model (XGBoost/Random Forest)
+        
+        ### 💡 Example Interpretation
+        - **Next Day = 5.2 units** → Expect to sell ~5 units tomorrow
+        - **Next 7-Day = 28.4 units** → Expect to sell ~28 units total over the next week
+        - If next day = 5 and next 7-day = 28, average daily = 28/7 = 4 units/day
+        """)
+    
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("### Input Parameters")
+        
+        with st.form("forecast_form"):
+            pharmacy_id = st.text_input("Pharmacy ID", value="Ph01_Z01_C01", help="Unique pharmacy location identifier")
+            barcode = st.text_input("Barcode", value="6251070000000", help="Product barcode/SKU")
+            forecast_date = st.date_input("Date", value=datetime.now(), help="Reference date for prediction")
+            recent_sales_str = st.text_area(
+                "Recent Sales (14 values)",
+                value="0,1,0,2,1,0,3,2,1,0,1,2,0,1",
+                height=80,
+                help="Last 14 days of daily sales, comma-separated (most recent last)"
+            )
+            submit = st.form_submit_button("Generate Forecast", use_container_width=True)
+        
+    with col2:
+        st.markdown("### Results")
+        
+        if submit:
             try:
-                recent_list = [float(x.strip()) for x in recent.split(",") if x.strip() != ""]
-                if len(recent_list) != 14:
-                    st.error(f"Please enter exactly 14 values. You provided {len(recent_list)}.")
+                recent_sales = [float(x.strip()) for x in recent_sales_str.split(",") if x.strip()]
+                
+                if len(recent_sales) != 14:
+                    st.error("❌ Provide exactly 14 values")
                 else:
                     payload = {
-                        "pharmacy_id": pharmacy_id.strip(),
-                        "barcode": barcode.strip(),
-                        "date": str(d),
-                        "recent_daily_sales": recent_list
+                        "pharmacy_id": pharmacy_id,
+                        "barcode": barcode,
+                        "date": forecast_date.isoformat(),
+                        "recent_daily_sales": recent_sales,
                     }
-                    result = api_post_json("/predict/demand-next7", payload, timeout=30)
-
-                    # Extract values safely
-                    next7 = result.get("next_7day_demand", None)
-                    next1 = result.get("next_day_demand", None)
-                    model_name = result.get("model_name", "unknown")
-
-                    if next7 is None:
-                        st.warning("Prediction returned, but next_7day_demand was not found in response.")
+                    
+                    response = requests.post(
+                        f"{api_url}/predict/demand-next7",
+                        json=payload,
+                        timeout=10
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        next_day = result.get("next_day_demand")
+                        next_7day = result.get("next_7day_demand")
+                        
+                        st.success("✅ Forecast generated successfully!")
+                        
+                        col_a, col_b = st.columns(2)
+                        col_a.metric(
+                            "Next Day", 
+                            f"{next_day:.2f}" if isinstance(next_day, (int, float)) else str(next_day),
+                            help="Units expected to sell tomorrow"
+                        )
+                        col_b.metric(
+                            "Next 7 Days", 
+                            f"{next_7day:.2f}" if isinstance(next_7day, (int, float)) else str(next_7day),
+                            help="Total units expected over next week"
+                        )
+                        
+                        # Show interpretation
+                        if isinstance(next_7day, (int, float)) and isinstance(next_day, (int, float)):
+                            avg_daily = next_7day / 7.0
+                            st.info(f"💡 **Interpretation:** Average daily demand over next week: ~{avg_daily:.1f} units/day")
                     else:
-                        st.success("Prediction successful ✅")
-                        st.metric("Predicted total demand (next 7 days)", f"{float(next7):.2f} units")
-
-                        if next1 is not None:
-                            st.metric("Predicted next-day demand", f"{float(next1):.2f} units")
-
-                        # Daily split estimate (honest: not true daily forecast unless API returns daily list)
-                        avg_per_day = float(next7) / 7.0
-                        st.metric("Average per day (simple estimate)", f"{avg_per_day:.2f} units/day")
-
-                        st.caption(f"Model used: **{model_name}**")
-
-                        # Show a simple bar chart (even split estimate)
-                        daily_est = [avg_per_day] * 7
-                        st.write("Estimated daily split (even distribution for visualization):")
-                        st.bar_chart(pd.DataFrame({"day": list(range(1, 8)), "units": daily_est}).set_index("day"))
-
-                    with st.expander("Advanced details (raw API response)"):
-                        st.json(result)
-
-            except requests.HTTPError as e:
-                st.error(f"API error: {e}")
-                # Show response if available
-                try:
-                    st.code(e.response.text)
-                except Exception:
-                    pass
+                        st.error(f"❌ API Error: {response.status_code}")
             except Exception as e:
-                st.error(f"Prediction failed: {e}")
+                st.error(f"❌ Error: {e}")
         else:
-            st.info("Fill in the inputs and click **Predict next 7 days** to see the forecast.")
+            st.info("👈 Fill in the form and click **Generate Forecast** to get predictions")
+            st.caption("The model will predict demand based on your recent sales pattern and historical trends.")
 
+# =========================
+# Page: Bundles
+# =========================
 
-# ============================================================
-# TAB 2: Bundle Recommendations
-# ============================================================
-with tab_bundles:
-    st.subheader("Frequently Bought Together (Bundle Recommendations)")
-    st.write("Enter a product barcode and get items that are commonly purchased with it.")
-
-    left, right = st.columns([1.1, 1.0])
-
-    with left:
-        sample_ids = sorted(set(cooc_df["item_a"].astype(str)).union(set(cooc_df["item_b"].astype(str))))
-        bundle_barcode = st.selectbox("Select an Item ID", sample_ids[:500], index=0)
-
-        bundle_barcode = st.text_input("Item ID for bundles (from transactions)", value="1063", key="bundle_barcode")
-        top_n = st.slider("How many recommendations?", min_value=3, max_value=10, value=5)
-
-        st.write("You entered:", bundle_barcode)
-        st.write("Example item_a/item_b from file:", cooc_df[["item_a","item_b"]].head(5))
-
-        recommend_clicked = st.button("Show bundle recommendations 🧺", type="primary")
-
-        st.caption("Note: This panel reads from your co-occurrence CSV (local) unless you later add a bundles API.")
-
-    with right:
-        st.subheader("Recommended bundle items")
-
-        if cooc_df is None:
-            st.error("Bundle data not found.")
-            st.write("Expected a file like:")
-            st.code(str(PROJECT_ROOT / "data" / "processed" / "bundle_cooccurrence.csv"))
-            st.write("If your co-occurrence file exists with a different name/location, tell me its path and I’ll plug it in.")
-        else:
-            st.caption(f"Using co-occurrence file: {cooc_path}")
-
-            if recommend_clicked:
-                recs, err = recommend_bundles_from_df(cooc_df, bundle_barcode.strip(), top_n=top_n)
-
-                if err:
-                    st.error(err)
-                    with st.expander("Debug: co-occurrence columns"):
-                        st.write(list(cooc_df.columns))
-                else:
-                    if recs.empty:
-                        st.warning("No bundle recommendations found for that barcode in the co-occurrence dataset.")
-                    else:
-                        st.success("Recommendations ready ✅")
-
-                        # Pretty table
-                        recs_display = recs.copy()
-                        recs_display["strength"] = recs_display["strength"].astype(float).round(4)
-                        # st.dataframe(recs_display, width="stretch", hide_index=True)
-                        # Join back extra info (support, cooc_count) for display
-                        colA, colB = infer_item_columns(cooc_df)
-                        sub = cooc_df[(cooc_df[colA] == bundle_barcode) | (cooc_df[colB] == bundle_barcode)].copy()
-                        sub["recommended_item"] = sub.apply(lambda r: r[colB] if str(r[colA]) == bundle_barcode else r[colA], axis=1)
-
-                        # Compute directional confidence as strength
-                        sub["confidence"] = sub.apply(lambda r: r["conf_a_to_b"] if str(r[colA]) == bundle_barcode else r["conf_b_to_a"], axis=1)
-
-                        table = (
-                            sub.groupby("recommended_item", as_index=False)
-                            .agg(confidence=("confidence", "max"), support=("support", "max"), cooc_count=("cooc_count", "max"))
-                            .sort_values("confidence", ascending=False)
-                            .head(top_n)
-                        )
-
-                        table["confidence"] = table["confidence"].round(4)
-                        table["support"] = table["support"].round(6)
-
-                        st.dataframe(table, width="stretch", hide_index=True)
-
-
-                        # Small “bundle idea” demo
-                        st.write("Bundle idea (demo):")
-                        top_items = recs_display["recommended_item"].head(3).tolist()
-                        st.markdown(
-                            f"- **Suggested offer:** Buy **{bundle_barcode}** + **{', '.join(map(str, top_items))}** → offer a small discount"
-                        )
-
-                        with st.expander("Advanced details (how this is computed)"):
-                            st.write("We filter co-occurrence rows where the selected barcode appears, then rank the paired items by a strength column (confidence/lift/support/etc.) if present, otherwise by frequency.")
-
+def render_bundles(cooc_df: Optional[pd.DataFrame], system_health: SystemHealth):
+    """Bundle recommendations."""
+    
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">🧺 Bundles</div>
+        <div class="page-subtitle">Product bundle recommendations</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if cooc_df is None:
+        st.error("Bundle data not available")
+        return
+    
+    col1, col2 = st.columns([1, 1.2])
+    
+    with col1:
+        st.markdown("### Select Product")
+        
+        colA, colB = infer_item_columns(cooc_df)
+        items = sorted(set(cooc_df[colA].astype(str).tolist() + cooc_df[colB].astype(str).tolist()))
+        default_item = "1063" if "1063" in items else items[0]
+        
+        selected_item = st.selectbox("Product", options=items, index=items.index(default_item))
+        top_n = st.slider("Top N", 3, 10, 5)
+        find = st.button("Find Bundles", use_container_width=True, type="primary")
+    
+    with col2:
+        st.markdown("### Recommendations")
+        
+        if find:
+            recommendations = recommend_bundles(cooc_df, selected_item, top_n=top_n)
+            
+            if recommendations.empty:
+                st.warning("No recommendations found")
             else:
-                st.info("Enter a product barcode and click **Show bundle recommendations**.")
+                st.dataframe(recommendations, use_container_width=True, hide_index=True)
+        else:
+            st.info("Select product and click Find Bundles")
 
+# =========================
+# Page: Analytics - COMPLETE VERSION
+# =========================
 
-# ============================================================
-# TAB 3: System & Validation
-# ============================================================
-with tab_system:
-    st.subheader("System & Validation")
-    st.write("This section is mainly for technical verification and professors: artifacts, metrics, and validation reports.")
+def render_analytics(train_df: Optional[pd.DataFrame], test_df: Optional[pd.DataFrame], cooc_df: Optional[pd.DataFrame]):
+    """Analytics page with ALL tabs filled."""
+    
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">📊 Analytics</div>
+        <div class="page-subtitle">Data insights and patterns</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if train_df is None:
+        st.error("Training data not available")
+        return
+    
+    tabs = st.tabs(["📈 Sales", "🧺 Bundles", "📅 Patterns"])
+    
+    # TAB 1: Sales Analysis
+    with tabs[0]:
+        if "daily_sales" in train_df.columns:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("### Distribution")
+                fig = px.histogram(train_df, x="daily_sales", nbins=50, color_discrete_sequence=["#0F766E"])
+                fig.update_layout(height=300, showlegend=False, template="plotly_white")
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            
+            with col2:
+                st.markdown("### Statistics")
+                stats = train_df["daily_sales"].describe()
+                st.write(f"**Mean:** {stats['mean']:.2f}")
+                st.write(f"**Median:** {stats['50%']:.2f}")
+                st.write(f"**Std Dev:** {stats['std']:.2f}")
+                st.write(f"**Max:** {stats['max']:.0f}")
+                st.write(f"**Min:** {stats['min']:.0f}")
+    
+    # TAB 2: Bundle Analysis
+    with tabs[1]:
+        if cooc_df is not None:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("### Confidence Distribution")
+                if "conf_a_to_b" in cooc_df.columns:
+                    fig = px.histogram(
+                        cooc_df, 
+                        x="conf_a_to_b", 
+                        nbins=30,
+                        title="Bundle Confidence Scores",
+                        labels={"conf_a_to_b": "Confidence"},
+                        color_discrete_sequence=["#0D9488"]
+                    )
+                    fig.update_layout(height=300, showlegend=False, template="plotly_white")
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                else:
+                    st.info("Confidence data not available")
+            
+            with col2:
+                st.markdown("### Top Item Pairs")
+                if "cooc_count" in cooc_df.columns:
+                    top_pairs = cooc_df.nlargest(10, "cooc_count")
+                    colA, colB = infer_item_columns(cooc_df)
+                    top_pairs["pair"] = top_pairs[colA].astype(str) + " + " + top_pairs[colB].astype(str)
+                    
+                    fig = px.bar(
+                        top_pairs,
+                        y="pair",
+                        x="cooc_count",
+                        orientation='h',
+                        title="Most Frequent Pairs",
+                        color="cooc_count",
+                        color_continuous_scale="Teal"
+                    )
+                    fig.update_layout(
+                        height=300,
+                        showlegend=False,
+                        template="plotly_white",
+                        yaxis={'categoryorder': 'total ascending'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                else:
+                    st.info("Co-occurrence data not available")
+            
+            # Bundle statistics
+            st.markdown("### Bundle Statistics")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Pairs", f"{len(cooc_df):,}")
+            with col2:
+                if "conf_a_to_b" in cooc_df.columns:
+                    st.metric("Avg Confidence", f"{cooc_df['conf_a_to_b'].mean():.3f}")
+            with col3:
+                if "support" in cooc_df.columns:
+                    st.metric("Avg Support", f"{cooc_df['support'].mean():.4f}")
+        else:
+            st.info("Bundle data not available for analysis")
+    
+    # TAB 3: Temporal Patterns
+    with tabs[2]:
+        st.markdown("### Temporal Analysis")
+        
+        if "daily_sales" in train_df.columns:
+            # Sales trend over time
+            st.markdown("#### Sales Over Time")
+            recent_data = train_df.tail(90)
+            if len(recent_data) > 0:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    y=recent_data["daily_sales"],
+                    mode='lines',
+                    name='Daily Sales',
+                    line=dict(color='#0F766E', width=2)
+                ))
+                fig.update_layout(
+                    xaxis_title="Days",
+                    yaxis_title="Sales",
+                    template="plotly_white",
+                    height=300
+                )
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            
+            # Volatility analysis
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### Volatility")
+                rolling_std = train_df["daily_sales"].rolling(window=7).std()
+                fig = px.line(
+                    y=rolling_std.dropna(),
+                    title="7-Day Rolling Standard Deviation",
+                    labels={"y": "Std Dev", "index": "Days"}
+                )
+                fig.update_layout(height=250, template="plotly_white", showlegend=False)
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            
+            with col2:
+                st.markdown("#### Moving Average")
+                rolling_mean = train_df["daily_sales"].rolling(window=7).mean()
+                fig = px.line(
+                    y=rolling_mean.dropna(),
+                    title="7-Day Moving Average",
+                    labels={"y": "Avg Sales", "index": "Days"}
+                )
+                fig.update_layout(height=250, template="plotly_white", showlegend=False)
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        else:
+            st.info("Sales data required for temporal analysis")
 
-    # Section: System Health
-    st.markdown("### ✅ System Health")
-    if health is None:
-        st.error("Could not reach API /health. Is FastAPI running?")
-    else:
-        # Human-readable checklist
-        st.write(human_badge(True, "API reachable"))
-        st.write(human_badge(bool(health.get("model_loaded") is True), "Model loaded"))
-        st.write(human_badge(bool(health.get("cooc_file_present") is True), "Co-occurrence file present (backend check)"))
-        st.write(human_badge(bool(health.get("metrics_file_present") is True), "Metrics file present (backend check)"))
+# =========================
+# Page: Monitoring
+# =========================
 
-        with st.expander("Advanced details (raw /health JSON)"):
-            st.json(health)
-
-    st.divider()
-
-    # Section: Metrics
-    st.markdown("### 📊 Model Performance Metrics")
+def render_monitoring(metrics: Optional[dict], health: Optional[dict], api_url: str):
+    """Monitoring page."""
+    
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">🔍 Monitoring</div>
+        <div class="page-subtitle">Model performance metrics</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
     if metrics is None:
-        st.warning("Metrics not available via /metrics/latest.")
-    else:
-        # Try to extract common structure:
-        # metrics might look like:
-        # { "best_model": "...", "feature_columns": [...], "metrics": { "val": {...}, "test": {...} } }
-        best_model = metrics.get("best_model", metrics.get("model", "unknown"))
-        m = metrics.get("metrics", {})
+        st.error("Metrics not available")
+        return
+    
+    col1, col2, col3 = st.columns(3)
+    
+    rmse_test = _safe_get(metrics, "metrics.test.rmse")
+    mae_test = _safe_get(metrics, "metrics.test.mae")
+    r2_test = _safe_get(metrics, "metrics.test.r2")
+    
+    with col1:
+        st.metric("RMSE (Test)", f"{float(rmse_test):.4f}" if rmse_test else "—")
+    with col2:
+        st.metric("MAE (Test)", f"{float(mae_test):.4f}" if mae_test else "—")
+    with col3:
+        st.metric("R² Score", f"{float(r2_test):.4f}" if r2_test else "—")
+    
+    st.markdown("---")
+    st.markdown("### Complete Metrics")
+    st.json(metrics)
+    
+    st.link_button("View DeepChecks Report", DEEPCHECKS_URL, use_container_width=True)
 
-        val = m.get("val", {}) if isinstance(m, dict) else {}
-        test = m.get("test", {}) if isinstance(m, dict) else {}
+# =========================
+# Page: System - WITH DEEPCHECKS BUTTON
+# =========================
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Best model", str(best_model))
-
-        # Use safe gets
-        val_rmse = val.get("rmse", None)
-        val_mae = val.get("mae", None)
-        test_rmse = test.get("rmse", None)
-        test_mae = test.get("mae", None)
-
-        c2.metric("Validation RMSE", f"{val_rmse:.4f}" if isinstance(val_rmse, (int, float)) else "—")
-        c2.metric("Validation MAE", f"{val_mae:.4f}" if isinstance(val_mae, (int, float)) else "—")
-        c3.metric("Test RMSE", f"{test_rmse:.4f}" if isinstance(test_rmse, (int, float)) else "—")
-        c3.metric("Test MAE", f"{test_mae:.4f}" if isinstance(test_mae, (int, float)) else "—")
-
-        with st.expander("Advanced details (raw /metrics/latest JSON)"):
+def render_system(train_df: Optional[pd.DataFrame], test_df: Optional[pd.DataFrame], cooc_df: Optional[pd.DataFrame], metrics: Optional[dict]):
+    """System documentation."""
+    
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">📚 System</div>
+        <div class="page-subtitle">Complete system documentation</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # DEEPCHECKS BUTTON AT TOP
+    st.markdown("### 🔍 Validation Reports")
+    st.link_button(
+        "📊 Open DeepChecks Validation Report",
+        DEEPCHECKS_URL,
+        use_container_width=False,
+        type="primary"
+    )
+    st.caption("Comprehensive data quality and model validation report")
+    
+    st.markdown("---")
+    
+    tabs = st.tabs(["Overview", "Data", "Models", "Evaluation", "MLOps"])
+    
+    with tabs[0]:
+        st.markdown("### Project Summary")
+        st.write("""
+        **PharmaDemand** is a full-stack MLOps system for pharmaceutical demand forecasting 
+        and product bundle recommendations.
+        """)
+        
+        st.markdown("### Architecture")
+        st.write("- **Data Layer:** Invoice and sales data processing")
+        st.write("- **ML Layer:** Regression models for demand, association rules for bundles")
+        st.write("- **API Layer:** FastAPI inference server")
+        st.write("- **UI Layer:** Streamlit dashboard")
+    
+    with tabs[1]:
+        st.markdown("### Dataset Statistics")
+        
+        stats = []
+        if train_df is not None:
+            stats.append(["Training Set", len(train_df), train_df.shape[1]])
+        if test_df is not None:
+            stats.append(["Test Set", len(test_df), test_df.shape[1]])
+        if cooc_df is not None:
+            stats.append(["Bundles", len(cooc_df), cooc_df.shape[1]])
+        
+        if stats:
+            st.dataframe(pd.DataFrame(stats, columns=["Dataset", "Rows", "Columns"]), use_container_width=True, hide_index=True)
+    
+    with tabs[2]:
+        st.markdown("### Demand Forecasting")
+        st.write("- **Type:** Regression")
+        st.write("- **Features:** Lag features, rolling averages, seasonality")
+        st.write("- **Output:** Next-day and 7-day demand")
+        
+        st.markdown("### Bundle Recommendations")
+        st.write("- **Method:** Association rule mining")
+        st.write("- **Metrics:** Confidence, support, co-occurrence")
+    
+    with tabs[3]:
+        if metrics:
+            st.markdown("### Performance Metrics")
             st.json(metrics)
+        else:
+            st.info("Metrics not available")
+    
+    with tabs[4]:
+        st.markdown("### Technology Stack")
+        st.write("- **ML:** scikit-learn, pandas")
+        st.write("- **API:** FastAPI, Uvicorn")
+        st.write("- **UI:** Streamlit, Plotly")
+        st.write("- **Validation:** DeepChecks")
+        st.write("- **Orchestration:** Prefect")
+        st.write("- **Containerization:** Docker")
 
-    st.divider()
+# =========================
+# Run
+# =========================
 
-    # Section: DeepChecks
-    st.markdown("### 🧪 Data & Model Validation (DeepChecks)")
-    if report_path.exists():
-        st.success("DeepChecks report found ✅")
-    else:
-        st.warning("DeepChecks report not found locally. Run: python ml/deepchecks_gate.py")
-
-    st.link_button("Open DeepChecks Report", deepchecks_url)
-    st.code(deepchecks_url)
-
-    st.divider()
-
-    # Section: Artifacts
-    st.markdown("### 📦 Artifacts")
-    artifacts = [
-        ("Model file", file_status(model_path)),
-        ("Metrics file", file_status(metrics_path)),
-        ("DeepChecks HTML report", file_status(report_path)),
-        ("Co-occurrence CSV", file_status(cooc_path) if cooc_path else {"exists": False, "path": None, "last_modified": None, "size_mb": None}),
-    ]
-
-    art_rows = []
-    for name, info in artifacts:
-        art_rows.append({
-            "Artifact": name,
-            "Status": "✅" if info["exists"] else "❌",
-            "Path": info["path"],
-            "Last Modified": info["last_modified"],
-            "Size (MB)": info["size_mb"],
-        })
-
-    st.dataframe(pd.DataFrame(art_rows), width="stretch", hide_index=True)
+if __name__ == "__main__":
+    main()

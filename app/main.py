@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import joblib
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, HTMLResponse
 from pydantic import BaseModel
 
 
@@ -257,6 +257,36 @@ REPORTS_DIR = PROJECT_ROOT / "reports"
 
 if REPORTS_DIR.exists():
     app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
+
+# -------------------------------------------------
+# Deepchecks Themed Report (inject CSS into HTML)
+# -------------------------------------------------
+DEEPCHECKS_HTML = REPORTS_DIR / "deepchecks" / "deepchecks_report.html"
+DEEPCHECKS_THEME = REPORTS_DIR / "deepchecks" / "theme.css"
+
+@app.get("/reports/deepchecks/themed", response_class=HTMLResponse)
+def deepchecks_themed(v: str = "latest"):
+    if not DEEPCHECKS_HTML.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Deepchecks report not found at {DEEPCHECKS_HTML}",
+        )
+
+    # theme.css is optional
+    css = ""
+    if DEEPCHECKS_THEME.exists():
+        css = DEEPCHECKS_THEME.read_text(encoding="utf-8", errors="ignore")
+
+    html = DEEPCHECKS_HTML.read_text(encoding="utf-8", errors="ignore")
+
+    # Inject before </head> if possible
+    inject = f"<style>{css}</style>"
+    if "</head>" in html:
+        html = html.replace("</head>", inject + "</head>")
+    else:
+        html = inject + html
+
+    return HTMLResponse(content=html)
 
 
 @app.get("/health")
